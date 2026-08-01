@@ -16,7 +16,7 @@ jobs:
 
     defaults:
       run:
-        working-directory: artifact/lo-travel
+        working-directory: artifacts/lo-travel
 
     steps:
       - name: Checkout repository
