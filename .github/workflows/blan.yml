@@ -40,6 +40,52 @@ jobs:
           rm -f .npmrc
           rm -f ~/.npmrc
           npm config delete registry || true
+          npm config set registry https://npmjs.org
+
+      - name: Install dependencies
+        run: |
+          rm -rf node_modules
+          rm -f package-lock.json
+          
+          npm config delete proxy || true
+          npm config delete https-proxy || true
+          
+          node -e "
+          const fs = require('fs');
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          delete pkg.publishConfig;
+          delete pkg.resolutions;
+          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+          "
+          
+          npm install --legacy-peer-deps --no-audit --no-fund --registry=https://npmjs.org
+          npx expo install react-native-reanimated react-native-worklets -- --legacy-peer-deps --registry=https://npmjs.org
+
+      - name: Generate Android project (Expo)
+        run: |
+          npx expo prebuild --platform android --non-interactive
+
+      - name: Make Gradle executable
+        run: chmod +x android/gradlew
+
+      - name: Build Debug APK with embedded JS bundle
+        run: |
+          cd android
+          # FIXED: Added --continue to expose the exact compilation root error in your source code
+          ./gradlew assembleDebug -PBUNDLE_IN_APP=true --continue --no-daemon
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-debug-apk
+          path: artifacts/lo-travel/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          
+      - name: Reset npm registry
+        run: |
+          rm -f .npmrc
+          rm -f ~/.npmrc
+          npm config delete registry || true
           npm config set registry https://registry.npmjs.org/
 
       - name: Install dependencies
