@@ -12,7 +12,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
-    # FIXED: Pointed to the actual path where your files were unzipped
     defaults:
       run:
         working-directory: artifacts/lo-travel
@@ -39,7 +38,7 @@ jobs:
       - name: Reset npm registry
         run: |
           npm config delete registry || true
-          npm config set registry https://registry.npmjs.org/
+          npm config set registry https://npmjs.org
           rm -f .npmrc
 
       - name: Install dependencies
@@ -60,10 +59,8 @@ jobs:
           ./gradlew assembleDebug -PBUNDLE_IN_APP=true --stacktrace --no-daemon
 
       - name: Upload Debug APK
-        uses: actions/actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4
         with:
           name: android-debug-apk
-          # FIXED: Updated artifact path mapping to look inside artifacts/ folder
           path: artifacts/lo-travel/android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
-          
