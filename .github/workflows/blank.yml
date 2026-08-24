@@ -10,8 +10,10 @@ jobs:
   unzip:
     runs-on: ubuntu-latest
 
+    # Added workflows permission to allow pushing the extracted .yml file
     permissions:
       contents: write
+      workflows: write
 
     steps:
       - name: Checkout repository
@@ -21,7 +23,6 @@ jobs:
 
       - name: Extract Android Build Package
         run: |
-          # Safely locate any instance of the specific zip file
           find . -type f -name "android-build-package.zip" | while read -r zip; do
             target_dir=$(dirname "$zip")
 
@@ -35,20 +36,15 @@ jobs:
       - name: Fix extracted file permissions
         run: |
           echo "Fixing workspace permissions..."
-          
-          # Standard directory and file permissions (excluding hidden git folders)
           find . -type d -not -path '*/.*' -exec chmod 755 {} \;
           find . -type f -not -path '*/.*' -exec chmod 644 {} \;
-
-          # Ensure Android/Gradle build tools remain executable if present
           find . -name "gradlew" -exec chmod +x {} \;
 
       - name: Commit and Push Changes
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@://github.com"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Track all new extracted assets and deleted zips
           git add -A
 
           if git diff --cached --quiet; then
@@ -56,7 +52,5 @@ jobs:
             exit 0
           fi
 
-          # [skip ci] prevents an infinite loop when pushing back to the repo
           git commit -m "Automatically extracted android-build-package.zip [skip ci]"
           git push
-          
