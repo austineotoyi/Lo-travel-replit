@@ -10,10 +10,8 @@ jobs:
   unzip:
     runs-on: ubuntu-latest
 
-    # Added workflows permission to allow pushing the extracted .yml file
     permissions:
       contents: write
-      workflows: write
 
     steps:
       - name: Checkout repository
@@ -27,7 +25,9 @@ jobs:
             target_dir=$(dirname "$zip")
 
             echo "Extracting $zip into $target_dir..."
-            unzip -o "$zip" -d "$target_dir"
+            
+            # The -x flag explicitly excludes internal workflow paths to prevent permission rejection
+            unzip -o "$zip" -d "$target_dir" -x "*.github/workflows/*"
 
             echo "Removing $zip..."
             rm -f "$zip"
@@ -54,3 +54,4 @@ jobs:
 
           git commit -m "Automatically extracted android-build-package.zip [skip ci]"
           git push
+          
