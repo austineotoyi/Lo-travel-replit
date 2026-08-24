@@ -37,6 +37,38 @@ jobs:
 
       - name: Reset npm registry
         run: |
+          # Completely purge local configs to prevent downstream 403 blocks
+          rm -f .npmrc
+          rm -f ~/.npmrc
+          npm config delete registry || true
+          npm config set registry https://npmjs.org
+
+      - name: Install dependencies
+        run: |
+          rm -rf node_modules
+          # FIXED: Added --legacy-peer-deps to handle mismatched react-compiler peer versions gracefully
+          npm install --legacy-peer-deps
+
+      - name: Generate Android project (Expo)
+        run: |
+          npx expo prebuild --platform android --non-interactive
+
+      - name: Make Gradle executable
+        run: chmod +x android/gradlew
+
+      - name: Build Debug APK with embedded JS bundle
+        run: |
+          cd android
+          ./gradlew assembleDebug -PBUNDLE_IN_APP=true --stacktrace --no-daemon
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-debug-apk
+          path: artifacts/lo-travel/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+      - name: Reset npm registry
+        run: |
           npm config delete registry || true
           npm config set registry https://npmjs.org
           rm -f .npmrc
