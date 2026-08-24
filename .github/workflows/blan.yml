@@ -35,6 +35,50 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Install dependencies
+        run: |
+          # Purge node modules and ALL old lock files completely
+          rm -rf node_modules
+          rm -f package-lock.json
+          rm -f yarn.lock
+          rm -f .npmrc
+          rm -f ~/.npmrc
+          
+          # Clean out global system proxy footprints entirely
+          unset HTTP_PROXY
+          unset HTTPS_PROXY
+          unset http_proxy
+          unset https_proxy
+          
+          # FIXED: Switch engine execution to Yarn to fully break away from npm's 403 configuration lock
+          yarn config delete proxy || true
+          yarn config delete https-proxy || true
+          
+          # Force clean install bypassing strict peer block dependencies
+          yarn install --ignore-engines
+          
+          # Reconcile the Reanimated/Worklets ecosystem using Expo's validated dependency engine
+          npx expo install react-native-reanimated react-native-worklets
+
+      - name: Generate Android project (Expo)
+        run: |
+          npx expo prebuild --platform android --non-interactive
+
+      - name: Make Gradle executable
+        run: chmod +x android/gradlew
+
+      - name: Build Debug APK with embedded JS bundle
+        run: |
+          cd android
+          ./gradlew assembleDebug -PBUNDLE_IN_APP=true --continue --no-daemon
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-debug-apk
+          path: artifacts/lo-travel/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          
       - name: Reset npm registry
         run: |
           rm -f .npmrc
