@@ -40,6 +40,43 @@ jobs:
           rm -f .npmrc
           rm -f ~/.npmrc
           npm config delete registry || true
+          npm config set registry https://npmjs.org
+
+      - name: Install dependencies
+        run: |
+          rm -rf node_modules
+          rm -f package-lock.json
+          
+          # Perform the core installation
+          npm install --legacy-peer-deps
+          
+          # FIXED: Forcefully reconcile the Reanimated & Worklets ecosystem using Expo's validated dependency engine
+          npx expo install react-native-reanimated react-native-worklets -- --legacy-peer-deps
+
+      - name: Generate Android project (Expo)
+        run: |
+          npx expo prebuild --platform android --non-interactive
+
+      - name: Make Gradle executable
+        run: chmod +x android/gradlew
+
+      - name: Build Debug APK with embedded JS bundle
+        run: |
+          cd android
+          ./gradlew assembleDebug -PBUNDLE_IN_APP=true --stacktrace --no-daemon
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-debug-apk
+          path: artifacts/lo-travel/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          
+      - name: Reset npm registry
+        run: |
+          rm -f .npmrc
+          rm -f ~/.npmrc
+          npm config delete registry || true
           npm config set registry https://registry.npmjs.org/
 
       - name: Install dependencies
