@@ -7,8 +7,16 @@ on:
       - main
       - master
 
+permissions:
+  contents: read
+
+concurrency:
+  group: android-build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
+    name: Build LO Travel Release APK
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -16,25 +24,238 @@ jobs:
       run:
         working-directory: artifacts/lo-travel
 
+    env:
+      NODE_ENV: production
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: artifacts/lo-travel/package-lock.json
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-          cache: gradle
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Configure public npm registry
+        run: |
+          rm -f .npmrc
+          rm -f ~/.npmrc
+
+          npm config delete proxy || true
+          npm config delete https-proxy || true
+          npm config delete noproxy || true
+
+          npm config set registry https://registry.npmjs.org/
+
+          echo "npm registry:"
+          npm config get registry
+
+      - name: Verify project files
+        run: |
+          test -f package.json
+          test -f package-lock.json
+          test -f app.json
+
+          echo "Project:"
+          pwd
+
+          echo "Files:"
+          ls -la
+
+      - name: Install dependencies
+        run: |
+          npm ci \
+            --legacy-peer-deps \
+            --no-audit \
+            --no-fund \
+            --registry=https://registry.npmjs.org/
+
+      - name: Verify Expo configuration
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+
+          const file = "app.json";
+          const config = JSON.parse(fs.readFileSync(file, "utf8"));
+
+          config.expo = config.expo || {};
+
+          // Reanimated 4 and Worklets require the New Architecture.
+          config.expo.newArchEnabled = true;
+
+          fs.writeFileSync(
+            file,
+            JSON.stringify(config, null, 2) + "\n"
+          );
+
+          console.log(
+            "Expo newArchEnabled:",
+            config.expo.newArchEnabled
+          );
+          NODE
+
+          grep -n "newArchEnabled" app.json
+
+      - name: Remove old Android project
+        run: |
+          rm -rf android
+          echo "Old generated Android project removed."
+
+      - name: Generate clean Android project
+        run: |
+          npx expo prebuild \
+            --platform android \
+            --clean \
+            --non-interactive
+
+      - name: FORCE New Architecture in Gradle
+        run: |
+          test -f android/gradle.properties
+
+          echo ""
+          echo "Before correction:"
+          grep -n "newArchEnabled" android/gradle.properties || true
+
+          # Remove every existing newArchEnabled entry.
+          sed -i '/^[[:space:]]*newArchEnabled[[:space:]]*=/d' \
+            android/gradle.properties
+
+          # Add exactly one enabled setting.
+          echo "newArchEnabled=true" >> android/gradle.properties
+
+          echo ""
+          echo "After correction:"
+          grep -n "newArchEnabled" android/gradle.properties
+
+          # Hard fail if the generated project is not configured correctly.
+          COUNT=$(grep -c "^newArchEnabled=true$" android/gradle.properties || true)
+
+          if [ "$COUNT" -ne 1 ]; then
+            echo "ERROR: newArchEnabled=true was not configured correctly."
+            exit 1
+          fi
+
+      - name: Verify Reanimated and Worklets
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+
+          const pkg = JSON.parse(
+            fs.readFileSync("package.json", "utf8")
+          );
+
+          console.log(
+            "react-native:",
+            pkg.dependencies["react-native"]
+          );
+
+          console.log(
+            "react-native-reanimated:",
+            pkg.dependencies["react-native-reanimated"]
+          );
+
+          console.log(
+            "react-native-worklets:",
+            pkg.dependencies["react-native-worklets"]
+          );
+          NODE
+
+      - name: Make Gradle executable
+        run: chmod +x android/gradlew
+
+      - name: Verify Gradle New Architecture
+        working-directory: artifacts/lo-travel/android
+        run: |
+          echo "Final Gradle configuration:"
+          grep -n "newArchEnabled" gradle.properties
+
+          if ! grep -q "^newArchEnabled=true$" gradle.properties; then
+            echo "ERROR: New Architecture is disabled."
+            exit 1
+          fi
+
+      - name: Build Release APK
+        working-directory: artifacts/lo-travel/android
+        run: |
+          ./gradlew clean
+          ./gradlew assembleRelease \
+            --no-daemon \
+            --stacktrace
+
+      - name: Verify APK
+        run: |
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+
+          if [ ! -f "$APK" ]; then
+            echo "ERROR: Release APK was not generated."
+            exit 1
+          fi
+
+          echo "Release APK:"
+          ls -lh "$APK"
+
+      - name: Prepare release artifact
+        run: |
+          mkdir -p release
+
+          cp \
+            android/app/build/outputs/apk/release/app-release.apk \
+            release/LO-Travel-Release.apk
+
+          sha256sum \
+            release/LO-Travel-Release.apk \
+            > release/LO-Travel-Release.apk.sha256
+
+          echo ""
+          echo "Release files:"
+          ls -lh release/
+
+          echo ""
+          echo "SHA256:"
+          cat release/LO-Travel-Release.apk.sha256
+
+      - name: Upload Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LO-Travel-Release-APK
+          path: |
+            artifacts/lo-travel/release/LO-Travel-Release.apk
+            artifacts/lo-travel/release/LO-Travel-Release.apk.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Build summary
+        if: always()
+        run: |
+          echo "## LO Travel Android Build" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -f release/LO-Travel-Release.apk ]; then
+            echo "### ✅ Release APK generated" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**APK:** LO-Travel-Release.apk" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Size:** $(du -h release/LO-Travel-Release.apk | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**SHA-256:**" >> "$GITHUB_STEP_SUMMARY"
+            echo '```text' >> "$GITHUB_STEP_SUMMARY"
+            cat release/LO-Travel-Release.apk.sha256 >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### ❌ Release APK was not generated" >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Install dependencies
         run: |
           # Purge node modules and ALL old lock files completely
