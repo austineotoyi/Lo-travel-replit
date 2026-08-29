@@ -10,10 +10,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: android-build-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   build:
     name: Build LO Travel Release APK
@@ -25,587 +21,368 @@ jobs:
         working-directory: artifacts/lo-travel
 
     env:
-      NODE_ENV: production
-      NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+      NODE_VERSION: "20.19.0"
+      EXPO_NO_TELEMETRY: "1"
+      CI: "1"
 
     steps:
+
+      # ---------------------------------------------------------
+      # 1. CHECKOUT
+      # ---------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
+
+      # ---------------------------------------------------------
+      # 2. NODE.JS
+      # Expo SDK 54 requires Node 20.19.x or newer.
+      # ---------------------------------------------------------
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "20.19.0"
           cache: npm
           cache-dependency-path: artifacts/lo-travel/package-lock.json
 
+
+      # ---------------------------------------------------------
+      # 3. JAVA
+      # ---------------------------------------------------------
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
+
+      # ---------------------------------------------------------
+      # 4. ANDROID SDK
+      # ---------------------------------------------------------
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Configure public npm registry
+
+      # ---------------------------------------------------------
+      # 5. VERIFY PROJECT
+      # ---------------------------------------------------------
+      - name: Verify project structure
+        run: |
+          echo "Working directory:"
+          pwd
+
+          echo ""
+          echo "Project files:"
+          ls -la
+
+          echo ""
+          echo "package.json:"
+          test -f package.json
+
+          echo ""
+          echo "package-lock.json:"
+          test -f package-lock.json
+
+          echo ""
+          echo "app.json:"
+          test -f app.json
+
+
+      # ---------------------------------------------------------
+      # 6. CLEAN NPM CONFIGURATION
+      # Do NOT delete package-lock.json.
+      # ---------------------------------------------------------
+      - name: Configure npm
         run: |
           rm -f .npmrc
-          rm -f ~/.npmrc
 
           npm config delete proxy || true
           npm config delete https-proxy || true
-          npm config delete noproxy || true
 
           npm config set registry https://registry.npmjs.org/
 
-          echo "npm registry:"
-          npm config get registry
 
-      - name: Verify project files
-        run: |
-          test -f package.json
-          test -f package-lock.json
-          test -f app.json
-
-          echo "Project:"
-          pwd
-
-          echo "Files:"
-          ls -la
-
+      # ---------------------------------------------------------
+      # 7. INSTALL EXACT LOCKFILE DEPENDENCIES
+      # ---------------------------------------------------------
       - name: Install dependencies
         run: |
-          npm ci \
-            --legacy-peer-deps \
-            --no-audit \
-            --no-fund \
-            --registry=https://registry.npmjs.org/
+          rm -rf node_modules
 
-      - name: Verify Expo configuration
+          npm ci --legacy-peer-deps --no-audit --no-fund
+
+
+      # ---------------------------------------------------------
+      # 8. ENFORCE EXPO SDK 54 COMPATIBLE REANIMATED STACK
+      #
+      # Expo SDK 54:
+      # react-native-reanimated ~4.1.1
+      # react-native-worklets 0.5.1
+      # ---------------------------------------------------------
+      - name: Verify Reanimated and Worklets versions
         run: |
+          echo "Installed Expo:"
+          npx expo --version
+
+          echo ""
+          echo "Installed React:"
+          npm ls react --depth=0 || true
+
+          echo ""
+          echo "Installed React Native:"
+          npm ls react-native --depth=0 || true
+
+          echo ""
+          echo "Installed Reanimated:"
+          npm ls react-native-reanimated --depth=0 || true
+
+          echo ""
+          echo "Installed Worklets:"
+          npm ls react-native-worklets --depth=0 || true
+
+
+      # ---------------------------------------------------------
+      # 9. VERIFY EXPO DEPENDENCY HEALTH
+      # ---------------------------------------------------------
+      - name: Run Expo Doctor
+        run: |
+          npx expo-doctor
+
+
+      # ---------------------------------------------------------
+      # 10. VERIFY NEW ARCHITECTURE
+      # ---------------------------------------------------------
+      - name: Verify New Architecture configuration
+        run: |
+          echo "Checking app.json..."
+
           node <<'NODE'
           const fs = require("fs");
 
-          const file = "app.json";
-          const config = JSON.parse(fs.readFileSync(file, "utf8"));
+          const app = JSON.parse(fs.readFileSync("app.json", "utf8"));
 
-          config.expo = config.expo || {};
+          app.expo = app.expo || {};
 
-          // Reanimated 4 and Worklets require the New Architecture.
-          config.expo.newArchEnabled = true;
+          if (app.expo.newArchEnabled !== true) {
+            console.log("newArchEnabled was not explicitly true.");
+            console.log("Forcing it to true for this CI build.");
 
-          fs.writeFileSync(
-            file,
-            JSON.stringify(config, null, 2) + "\n"
-          );
+            app.expo.newArchEnabled = true;
+
+            fs.writeFileSync(
+              "app.json",
+              JSON.stringify(app, null, 2) + "\n"
+            );
+          }
 
           console.log(
-            "Expo newArchEnabled:",
-            config.expo.newArchEnabled
+            "newArchEnabled:",
+            app.expo.newArchEnabled
           );
           NODE
 
-          grep -n "newArchEnabled" app.json
 
-      - name: Remove old Android project
+      # ---------------------------------------------------------
+      # 11. ENSURE CORRECT REANIMATED VERSIONS
+      # ---------------------------------------------------------
+      - name: Align Reanimated with Expo SDK 54
+        run: |
+          npx expo install \
+            react-native-reanimated@~4.1.1 \
+            react-native-worklets@0.5.1
+
+          echo ""
+          echo "Final dependency versions:"
+          npm ls react-native-reanimated react-native-worklets --depth=0 || true
+
+
+      # ---------------------------------------------------------
+      # 12. CLEAN OLD ANDROID PROJECT
+      #
+      # Android is generated from app.json/package.json.
+      # ---------------------------------------------------------
+      - name: Generate Android project
         run: |
           rm -rf android
-          echo "Old generated Android project removed."
 
-      - name: Generate clean Android project
-        run: |
           npx expo prebuild \
             --platform android \
             --clean \
             --non-interactive
 
-      - name: FORCE New Architecture in Gradle
+
+      # ---------------------------------------------------------
+      # 13. FORCE NEW ARCHITECTURE IN GENERATED GRADLE
+      # ---------------------------------------------------------
+      - name: Configure Android Gradle properties
         run: |
           test -f android/gradle.properties
 
-          echo ""
-          echo "Before correction:"
-          grep -n "newArchEnabled" android/gradle.properties || true
-
-          # Remove every existing newArchEnabled entry.
-          sed -i '/^[[:space:]]*newArchEnabled[[:space:]]*=/d' \
-            android/gradle.properties
-
-          # Add exactly one enabled setting.
-          echo "newArchEnabled=true" >> android/gradle.properties
-
-          echo ""
-          echo "After correction:"
-          grep -n "newArchEnabled" android/gradle.properties
-
-          # Hard fail if the generated project is not configured correctly.
-          COUNT=$(grep -c "^newArchEnabled=true$" android/gradle.properties || true)
-
-          if [ "$COUNT" -ne 1 ]; then
-            echo "ERROR: newArchEnabled=true was not configured correctly."
-            exit 1
+          if grep -q "^newArchEnabled=" android/gradle.properties; then
+            sed -i 's/^newArchEnabled=.*/newArchEnabled=true/' android/gradle.properties
+          else
+            echo "newArchEnabled=true" >> android/gradle.properties
           fi
 
-      - name: Verify Reanimated and Worklets
+          if grep -q "^hermesEnabled=" android/gradle.properties; then
+            sed -i 's/^hermesEnabled=.*/hermesEnabled=true/' android/gradle.properties
+          else
+            echo "hermesEnabled=true" >> android/gradle.properties
+          fi
+
+          echo ""
+          echo "Final android/gradle.properties:"
+          cat android/gradle.properties
+
+
+      # ---------------------------------------------------------
+      # 14. VERIFY GENERATED PROJECT
+      # ---------------------------------------------------------
+      - name: Verify generated Android project
         run: |
-          node <<'NODE'
-          const fs = require("fs");
+          test -f android/gradlew
+          test -f android/gradle.properties
+          test -f android/app/build.gradle
 
-          const pkg = JSON.parse(
-            fs.readFileSync("package.json", "utf8")
-          );
+          echo ""
+          echo "Generated Android project:"
+          ls -la android
 
-          console.log(
-            "react-native:",
-            pkg.dependencies["react-native"]
-          );
+          echo ""
+          echo "Gradle wrapper:"
+          ls -la android/gradlew
 
-          console.log(
-            "react-native-reanimated:",
-            pkg.dependencies["react-native-reanimated"]
-          );
 
-          console.log(
-            "react-native-worklets:",
-            pkg.dependencies["react-native-worklets"]
-          );
-          NODE
-
+      # ---------------------------------------------------------
+      # 15. MAKE GRADLE EXECUTABLE
+      # ---------------------------------------------------------
       - name: Make Gradle executable
         run: chmod +x android/gradlew
 
-      - name: Verify Gradle New Architecture
-        working-directory: artifacts/lo-travel/android
-        run: |
-          echo "Final Gradle configuration:"
-          grep -n "newArchEnabled" gradle.properties
 
-          if ! grep -q "^newArchEnabled=true$" gradle.properties; then
-            echo "ERROR: New Architecture is disabled."
-            exit 1
-          fi
-
-      - name: Build Release APK
-        working-directory: artifacts/lo-travel/android
+      # ---------------------------------------------------------
+      # 16. VERIFY NODE / JAVA / GRADLE ENVIRONMENT
+      # ---------------------------------------------------------
+      - name: Verify build environment
         run: |
-          ./gradlew clean
-          ./gradlew assembleRelease \
+          echo "Node:"
+          node --version
+
+          echo ""
+          echo "npm:"
+          npm --version
+
+          echo ""
+          echo "Java:"
+          java -version
+
+          echo ""
+          echo "Gradle:"
+          cd android
+          ./gradlew --version
+
+
+      # ---------------------------------------------------------
+      # 17. BUILD RELEASE APK
+      #
+      # assembleRelease automatically bundles JS for a release build.
+      # No Metro server is required on the user's phone.
+      # ---------------------------------------------------------
+      - name: Build LO Travel Release APK
+        run: |
+          cd android
+
+          ./gradlew \
+            assembleRelease \
+            --stacktrace \
             --no-daemon \
-            --stacktrace
+            --no-parallel
 
+
+      # ---------------------------------------------------------
+      # 18. VERIFY APK
+      # ---------------------------------------------------------
       - name: Verify APK
         run: |
-          APK="android/app/build/outputs/apk/release/app-release.apk"
+          echo "Release APK files:"
 
-          if [ ! -f "$APK" ]; then
-            echo "ERROR: Release APK was not generated."
+          find android/app/build/outputs/apk/release \
+            -type f \
+            -name "*.apk" \
+            -print
+
+          APK_COUNT=$(find android/app/build/outputs/apk/release \
+            -type f \
+            -name "*.apk" | wc -l)
+
+          if [ "$APK_COUNT" -eq 0 ]; then
+            echo "ERROR: No release APK was generated."
             exit 1
           fi
 
-          echo "Release APK:"
-          ls -lh "$APK"
-
-      - name: Prepare release artifact
-        run: |
-          mkdir -p release
-
-          cp \
-            android/app/build/outputs/apk/release/app-release.apk \
-            release/LO-Travel-Release.apk
-
-          sha256sum \
-            release/LO-Travel-Release.apk \
-            > release/LO-Travel-Release.apk.sha256
-
           echo ""
-          echo "Release files:"
-          ls -lh release/
+          echo "APK successfully generated."
 
-          echo ""
-          echo "SHA256:"
-          cat release/LO-Travel-Release.apk.sha256
 
-      - name: Upload Release APK
+      # ---------------------------------------------------------
+      # 19. UPLOAD RELEASE APK
+      # ---------------------------------------------------------
+      - name: Upload LO Travel Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: LO-Travel-Release-APK
-          path: |
-            artifacts/lo-travel/release/LO-Travel-Release.apk
-            artifacts/lo-travel/release/LO-Travel-Release.apk.sha256
+          name: lo-travel-release-apk
+          path: artifacts/lo-travel/android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 30
 
-      - name: Build summary
-        if: always()
+
+      # ---------------------------------------------------------
+      # 20. FAILURE DIAGNOSTICS
+      # ---------------------------------------------------------
+      - name: Collect build diagnostics
+        if: failure()
         run: |
-          echo "## LO Travel Android Build" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "================================================"
+          echo "BUILD DIAGNOSTICS"
+          echo "================================================"
 
-          if [ -f release/LO-Travel-Release.apk ]; then
-            echo "### ✅ Release APK generated" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "**APK:** LO-Travel-Release.apk" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "**Size:** $(du -h release/LO-Travel-Release.apk | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "**SHA-256:**" >> "$GITHUB_STEP_SUMMARY"
-            echo '```text' >> "$GITHUB_STEP_SUMMARY"
-            cat release/LO-Travel-Release.apk.sha256 >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "### ❌ Release APK was not generated" >> "$GITHUB_STEP_SUMMARY"
-          fi
-      - name: Install dependencies
-        run: |
-          # Purge node modules and ALL old lock files completely
-          rm -rf node_modules
-          rm -f package-lock.json
-          rm -f yarn.lock
-          rm -f .npmrc
-          rm -f ~/.npmrc
-          
-          # Clean out global system proxy footprints entirely
-          unset HTTP_PROXY
-          unset HTTPS_PROXY
-          unset http_proxy
-          unset https_proxy
-          
-          # FIXED: Switch engine execution to Yarn to fully break away from npm's 403 configuration lock
-          yarn config delete proxy || true
-          yarn config delete https-proxy || true
-          
-          # Force clean install bypassing strict peer block dependencies
-          yarn install --ignore-engines
-          
-          # Reconcile the Reanimated/Worklets ecosystem using Expo's validated dependency engine
-          npx expo install react-native-reanimated react-native-worklets
+          echo ""
+          echo "Node:"
+          node --version || true
 
-      - name: Generate Android project (Expo)
-        run: |
-          npx expo prebuild --platform android --non-interactive
+          echo ""
+          echo "npm:"
+          npm --version || true
 
-      - name: Make Gradle executable
-        run: chmod +x android/gradlew
+          echo ""
+          echo "Expo:"
+          npx expo --version || true
 
-      - name: Build Debug APK with embedded JS bundle
-        run: |
-          cd android
-          ./gradlew assembleDebug -PBUNDLE_IN_APP=true --continue --no-daemon
+          echo ""
+          echo "React Native:"
+          npm ls react-native --depth=0 || true
 
-      - name: Upload Debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-debug-apk
-          path: artifacts/lo-travel/android/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-          
-      - name: Reset npm registry
-        run: |
-          rm -f .npmrc
-          rm -f ~/.npmrc
-          npm config delete registry || true
-          npm config set registry https://npmjs.org
+          echo ""
+          echo "Reanimated:"
+          npm ls react-native-reanimated --depth=0 || true
 
-      - name: Install dependencies
-        run: |
-          rm -rf node_modules
-          rm -f package-lock.json
-          
-          npm config delete proxy || true
-          npm config delete https-proxy || true
-          
-          node -e "
-          const fs = require('fs');
-          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          delete pkg.publishConfig;
-          delete pkg.resolutions;
-          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
-          "
-          
-          npm install --legacy-peer-deps --no-audit --no-fund --registry=https://npmjs.org
-          npx expo install react-native-reanimated react-native-worklets -- --legacy-peer-deps --registry=https://npmjs.org
+          echo ""
+          echo "Worklets:"
+          npm ls react-native-worklets --depth=0 || true
 
-      - name: Generate Android project (Expo)
-        run: |
-          npx expo prebuild --platform android --non-interactive
+          echo ""
+          echo "gradle.properties:"
+          cat android/gradle.properties || true
 
-      - name: Make Gradle executable
-        run: chmod +x android/gradlew
+          echo ""
+          echo "Reanimated package:"
+          cat node_modules/react-native-reanimated/package.json || true
 
-      - name: Build Debug APK with embedded JS bundle
-        run: |
-          cd android
-          # FIXED: Added --continue to expose the exact compilation root error in your source code
-          ./gradlew assembleDebug -PBUNDLE_IN_APP=true --continue --no-daemon
+          echo ""
+          echo "Worklets package:"
+          cat node_modules/react-native-worklets/package.json || true
 
-      - name: Upload Debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-debug-apk
-          path: artifacts/lo-travel/android/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-          
-      - name: Reset npm registry
-        run: |
-          rm -f .npmrc
-          rm -f ~/.npmrc
-          npm config delete registry || true
-          npm config set registry https://registry.npmjs.org/
-
-      - name: Install dependencies
-        run: |
-          # Purge node modules and local locking profiles completely
-          rm -rf node_modules
-          rm -f package-lock.json
-          
-          # Clean out Replit configuration settings or custom overrides blocking network requests
-          npm config delete proxy || true
-          npm config delete https-proxy || true
-          
-          # FIXED: Use node to remove problematic private configuration values from package.json before running npm install
-          node -e "
-          const fs = require('fs');
-          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          delete pkg.publishConfig;
-          delete pkg.resolutions;
-          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
-          "
-          
-          # Run installation directly via the global public registry endpoint
-          npm install --legacy-peer-deps --no-audit --no-fund --registry=https://registry.npmjs.org/
-          
-          # Reconcile the Reanimated/Worklets ecosystem using Expo's validated dependency engine
-          npx expo install react-native-reanimated react-native-worklets -- --legacy-peer-deps --registry=https://registry.npmjs.org/
-
-      - name: Generate Android project (Expo)
-        run: |
-          npx expo prebuild --platform android --non-interactive
-
-      - name: Make Gradle executable
-        run: chmod +x android/gradlew
-
-      - name: Build Debug APK with embedded JS bundle
-        run: |
-          cd android
-          ./gradlew assembleDebug -PBUNDLE_IN_APP=true --stacktrace --no-daemon
-
-      - name: Upload Debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-debug-apk
-          path: artifacts/lo-travel/android/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-          
-      - name: Reset npm registry
-        run: |
-          rm -f .npmrc
-          rm -f ~/.npmrc
-          npm config delete registry || true
-          npm config set registry https://npmjs.org
-
-      - name: Install dependencies
-        run: |
-          # Purge node modules and local locking profiles completely
-          rm -rf node_modules
-          rm -f package-lock.json
-          
-          # FIXED: Actively clear out Replit/environment custom proxies blocking downstream network pulls
-          npm config delete proxy || true
-          npm config delete https-proxy || true
-          npm config delete noproxy || true
-          
-          # Force npm to run isolated with zero local or global authorization inheritance
-          npm install --legacy-peer-deps --no-audit --no-fund --registry=https://npmjs.org
-          
-          # Reconcile the Reanimated/Worklets ecosystem using Expo's validated dependency engine
-          npx expo install react-native-reanimated react-native-worklets -- --legacy-peer-deps --registry=https://npmjs.org
-
-      - name: Generate Android project (Expo)
-        run: |
-          npx expo prebuild --platform android --non-interactive
-
-      - name: Make Gradle executable
-        run: chmod +x android/gradlew
-
-      - name: Build Debug APK with embedded JS bundle
-        run: |
-          cd android
-          ./gradlew assembleDebug -PBUNDLE_IN_APP=true --stacktrace --no-daemon
-
-      - name: Upload Debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-debug-apk
-          path: artifacts/lo-travel/android/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-          
-      - name: Reset npm registry
-        run: |
-          rm -f .npmrc
-          rm -f ~/.npmrc
-          npm config delete registry || true
-          npm config set registry https://npmjs.org
-
-      - name: Install dependencies
-        run: |
-          rm -rf node_modules
-          rm -f package-lock.json
-          
-          # Perform the core installation
-          npm install --legacy-peer-deps
-          
-          # FIXED: Forcefully reconcile the Reanimated & Worklets ecosystem using Expo's validated dependency engine
-          npx expo install react-native-reanimated react-native-worklets -- --legacy-peer-deps
-
-      - name: Generate Android project (Expo)
-        run: |
-          npx expo prebuild --platform android --non-interactive
-
-      - name: Make Gradle executable
-        run: chmod +x android/gradlew
-
-      - name: Build Debug APK with embedded JS bundle
-        run: |
-          cd android
-          ./gradlew assembleDebug -PBUNDLE_IN_APP=true --stacktrace --no-daemon
-
-      - name: Upload Debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-debug-apk
-          path: artifacts/lo-travel/android/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-          
-      - name: Reset npm registry
-        run: |
-          rm -f .npmrc
-          rm -f ~/.npmrc
-          npm config delete registry || true
-          npm config set registry https://npmjs.org
-
-      - name: Install dependencies
-        run: |
-          rm -rf node_modules
-          rm -f package-lock.json
-          
-          # Perform the core installation
-          npm install --legacy-peer-deps
-          
-          # FIXED: Forcefully reconcile the Reanimated & Worklets ecosystem using Expo's validated dependency engine
-          npx expo install react-native-reanimated react-native-worklets -- --legacy-peer-deps
-
-      - name: Generate Android project (Expo)
-        run: |
-          npx expo prebuild --platform android --non-interactive
-
-      - name: Make Gradle executable
-        run: chmod +x android/gradlew
-
-      - name: Build Debug APK with embedded JS bundle
-        run: |
-          cd android
-          ./gradlew assembleDebug -PBUNDLE_IN_APP=true --stacktrace --no-daemon
-
-      - name: Upload Debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-debug-apk
-          path: artifacts/lo-travel/android/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-          
-      - name: Reset npm registry
-        run: |
-          rm -f .npmrc
-          rm -f ~/.npmrc
-          npm config delete registry || true
-          npm config set registry https://registry.npmjs.org/
-
-      - name: Install dependencies
-        run: |
-          # FIXED: Purging package-lock.json to avoid the 403 fetching state locks
-          rm -rf node_modules
-          rm -f package-lock.json
-          
-          # Run a fresh installation generating clean network hashes
-          npm install --legacy-peer-deps
-
-      - name: Generate Android project (Expo)
-        run: |
-          npx expo prebuild --platform android --non-interactive
-
-      - name: Make Gradle executable
-        run: chmod +x android/gradlew
-
-      - name: Build Debug APK with embedded JS bundle
-        run: |
-          cd android
-          ./gradlew assembleDebug -PBUNDLE_IN_APP=true --stacktrace --no-daemon
-
-      - name: Upload Debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-debug-apk
-          path: artifacts/lo-travel/android/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-      - name: Reset npm registry
-        run: |
-          # Completely purge local configs to prevent downstream 403 blocks
-          rm -f .npmrc
-          rm -f ~/.npmrc
-          npm config delete registry || true
-          npm config set registry https://npmjs.org
-
-      - name: Install dependencies
-        run: |
-          rm -rf node_modules
-          # FIXED: Added --legacy-peer-deps to handle mismatched react-compiler peer versions gracefully
-          npm install --legacy-peer-deps
-
-      - name: Generate Android project (Expo)
-        run: |
-          npx expo prebuild --platform android --non-interactive
-
-      - name: Make Gradle executable
-        run: chmod +x android/gradlew
-
-      - name: Build Debug APK with embedded JS bundle
-        run: |
-          cd android
-          ./gradlew assembleDebug -PBUNDLE_IN_APP=true --stacktrace --no-daemon
-
-      - name: Upload Debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-debug-apk
-          path: artifacts/lo-travel/android/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-      - name: Reset npm registry
-        run: |
-          npm config delete registry || true
-          npm config set registry https://npmjs.org
-          rm -f .npmrc
-
-      - name: Install dependencies
-        run: |
-          rm -rf node_modules
-          npm install
-
-      - name: Generate Android project (Expo)
-        run: |
-          npx expo prebuild --platform android --non-interactive
-
-      - name: Make Gradle executable
-        run: chmod +x android/gradlew
-
-      - name: Build Debug APK with embedded JS bundle
-        run: |
-          cd android
-          ./gradlew assembleDebug -PBUNDLE_IN_APP=true --stacktrace --no-daemon
-
-      - name: Upload Debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-debug-apk
-          path: artifacts/lo-travel/android/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
+          echo ""
+          echo "================================================"
+          echo "END DIAGNOSTICS"
+          echo "================================================"
