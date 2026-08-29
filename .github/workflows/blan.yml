@@ -21,23 +21,22 @@ jobs:
         working-directory: artifacts/lo-travel
 
     env:
-      NODE_VERSION: "20.19.0"
       EXPO_NO_TELEMETRY: "1"
       CI: "1"
 
     steps:
 
-      # ---------------------------------------------------------
-      # 1. CHECKOUT
-      # ---------------------------------------------------------
+      # --------------------------------------------------
+      # CHECKOUT
+      # --------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
 
-      # ---------------------------------------------------------
-      # 2. NODE.JS
-      # Expo SDK 54 requires Node 20.19.x or newer.
-      # ---------------------------------------------------------
+      # --------------------------------------------------
+      # NODE
+      # Expo SDK 54
+      # --------------------------------------------------
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -46,9 +45,9 @@ jobs:
           cache-dependency-path: artifacts/lo-travel/package-lock.json
 
 
-      # ---------------------------------------------------------
-      # 3. JAVA
-      # ---------------------------------------------------------
+      # --------------------------------------------------
+      # JAVA
+      # --------------------------------------------------
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
@@ -56,42 +55,34 @@ jobs:
           java-version: "17"
 
 
-      # ---------------------------------------------------------
-      # 4. ANDROID SDK
-      # ---------------------------------------------------------
+      # --------------------------------------------------
+      # ANDROID
+      # --------------------------------------------------
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
 
-      # ---------------------------------------------------------
-      # 5. VERIFY PROJECT
-      # ---------------------------------------------------------
-      - name: Verify project structure
+      # --------------------------------------------------
+      # VERIFY FILES
+      # --------------------------------------------------
+      - name: Verify project files
         run: |
-          echo "Working directory:"
+          echo "Current directory:"
           pwd
 
           echo ""
-          echo "Project files:"
+          echo "Files:"
           ls -la
 
-          echo ""
-          echo "package.json:"
           test -f package.json
-
-          echo ""
-          echo "package-lock.json:"
           test -f package-lock.json
-
-          echo ""
-          echo "app.json:"
           test -f app.json
+          test -f babel.config.js
 
 
-      # ---------------------------------------------------------
-      # 6. CLEAN NPM CONFIGURATION
-      # Do NOT delete package-lock.json.
-      # ---------------------------------------------------------
+      # --------------------------------------------------
+      # NPM CONFIGURATION
+      # --------------------------------------------------
       - name: Configure npm
         run: |
           rm -f .npmrc
@@ -102,105 +93,86 @@ jobs:
           npm config set registry https://registry.npmjs.org/
 
 
-      # ---------------------------------------------------------
-      # 7. INSTALL EXACT LOCKFILE DEPENDENCIES
-      # ---------------------------------------------------------
+      # --------------------------------------------------
+      # INSTALL EXACT LOCKFILE
+      # --------------------------------------------------
       - name: Install dependencies
         run: |
-          rm -rf node_modules
-
           npm ci --legacy-peer-deps --no-audit --no-fund
 
 
-      # ---------------------------------------------------------
-      # 8. ENFORCE EXPO SDK 54 COMPATIBLE REANIMATED STACK
-      #
-      # Expo SDK 54:
-      # react-native-reanimated ~4.1.1
-      # react-native-worklets 0.5.1
-      # ---------------------------------------------------------
-      - name: Verify Reanimated and Worklets versions
+      # --------------------------------------------------
+      # VERIFY CRITICAL DEPENDENCIES
+      # --------------------------------------------------
+      - name: Verify Expo dependencies
         run: |
-          echo "Installed Expo:"
-          npx expo --version
+          echo "Expo:"
+          npm ls expo --depth=0
 
           echo ""
-          echo "Installed React:"
-          npm ls react --depth=0 || true
+          echo "React:"
+          npm ls react --depth=0
 
           echo ""
-          echo "Installed React Native:"
-          npm ls react-native --depth=0 || true
+          echo "React Native:"
+          npm ls react-native --depth=0
 
           echo ""
-          echo "Installed Reanimated:"
-          npm ls react-native-reanimated --depth=0 || true
+          echo "Reanimated:"
+          npm ls react-native-reanimated --depth=0
 
           echo ""
-          echo "Installed Worklets:"
-          npm ls react-native-worklets --depth=0 || true
+          echo "Worklets:"
+          npm ls react-native-worklets --depth=0
+
+          echo ""
+          echo "Babel preset:"
+          npm ls babel-preset-expo --depth=0
 
 
-      # ---------------------------------------------------------
-      # 9. VERIFY EXPO DEPENDENCY HEALTH
-      # ---------------------------------------------------------
+      # --------------------------------------------------
+      # EXPO DOCTOR
+      #
+      # Do this BEFORE deleting/regenerating Android.
+      # We only care about dependency compatibility here.
+      # --------------------------------------------------
       - name: Run Expo Doctor
         run: |
-          npx expo-doctor
+          npx expo-doctor --verbose
 
 
-      # ---------------------------------------------------------
-      # 10. VERIFY NEW ARCHITECTURE
-      # ---------------------------------------------------------
-      - name: Verify New Architecture configuration
+      # --------------------------------------------------
+      # VERIFY APP CONFIG
+      # --------------------------------------------------
+      - name: Verify New Architecture
         run: |
-          echo "Checking app.json..."
-
           node <<'NODE'
           const fs = require("fs");
 
-          const app = JSON.parse(fs.readFileSync("app.json", "utf8"));
+          const file = "app.json";
+          const app = JSON.parse(fs.readFileSync(file, "utf8"));
 
-          app.expo = app.expo || {};
-
-          if (app.expo.newArchEnabled !== true) {
-            console.log("newArchEnabled was not explicitly true.");
-            console.log("Forcing it to true for this CI build.");
-
-            app.expo.newArchEnabled = true;
-
-            fs.writeFileSync(
-              "app.json",
-              JSON.stringify(app, null, 2) + "\n"
-            );
+          if (!app.expo) {
+            throw new Error("Missing expo configuration");
           }
 
+          app.expo.newArchEnabled = true;
+
+          fs.writeFileSync(
+            file,
+            JSON.stringify(app, null, 2) + "\n"
+          );
+
           console.log(
-            "newArchEnabled:",
+            "newArchEnabled =",
             app.expo.newArchEnabled
           );
           NODE
 
 
-      # ---------------------------------------------------------
-      # 11. ENSURE CORRECT REANIMATED VERSIONS
-      # ---------------------------------------------------------
-      - name: Align Reanimated with Expo SDK 54
-        run: |
-          npx expo install \
-            react-native-reanimated@~4.1.1 \
-            react-native-worklets@0.5.1
-
-          echo ""
-          echo "Final dependency versions:"
-          npm ls react-native-reanimated react-native-worklets --depth=0 || true
-
-
-      # ---------------------------------------------------------
-      # 12. CLEAN OLD ANDROID PROJECT
-      #
-      # Android is generated from app.json/package.json.
-      # ---------------------------------------------------------
+      # --------------------------------------------------
+      # GENERATE CLEAN ANDROID PROJECT
+      # --------------------------------------------------
       - name: Generate Android project
         run: |
           rm -rf android
@@ -211,58 +183,55 @@ jobs:
             --non-interactive
 
 
-      # ---------------------------------------------------------
-      # 13. FORCE NEW ARCHITECTURE IN GENERATED GRADLE
-      # ---------------------------------------------------------
-      - name: Configure Android Gradle properties
+      # --------------------------------------------------
+      # FORCE NEW ARCHITECTURE
+      # --------------------------------------------------
+      - name: Configure Gradle properties
         run: |
-          test -f android/gradle.properties
-
           if grep -q "^newArchEnabled=" android/gradle.properties; then
-            sed -i 's/^newArchEnabled=.*/newArchEnabled=true/' android/gradle.properties
+            sed -i \
+              's/^newArchEnabled=.*/newArchEnabled=true/' \
+              android/gradle.properties
           else
             echo "newArchEnabled=true" >> android/gradle.properties
           fi
 
           if grep -q "^hermesEnabled=" android/gradle.properties; then
-            sed -i 's/^hermesEnabled=.*/hermesEnabled=true/' android/gradle.properties
+            sed -i \
+              's/^hermesEnabled=.*/hermesEnabled=true/' \
+              android/gradle.properties
           else
             echo "hermesEnabled=true" >> android/gradle.properties
           fi
 
           echo ""
-          echo "Final android/gradle.properties:"
+          echo "Final Gradle properties:"
           cat android/gradle.properties
 
 
-      # ---------------------------------------------------------
-      # 14. VERIFY GENERATED PROJECT
-      # ---------------------------------------------------------
-      - name: Verify generated Android project
+      # --------------------------------------------------
+      # VERIFY GENERATED PROJECT
+      # --------------------------------------------------
+      - name: Verify Android project
         run: |
           test -f android/gradlew
-          test -f android/gradle.properties
           test -f android/app/build.gradle
+          test -f android/gradle.properties
 
           echo ""
-          echo "Generated Android project:"
-          ls -la android
-
-          echo ""
-          echo "Gradle wrapper:"
-          ls -la android/gradlew
+          echo "Android project generated successfully."
 
 
-      # ---------------------------------------------------------
-      # 15. MAKE GRADLE EXECUTABLE
-      # ---------------------------------------------------------
+      # --------------------------------------------------
+      # GRADLE PERMISSION
+      # --------------------------------------------------
       - name: Make Gradle executable
         run: chmod +x android/gradlew
 
 
-      # ---------------------------------------------------------
-      # 16. VERIFY NODE / JAVA / GRADLE ENVIRONMENT
-      # ---------------------------------------------------------
+      # --------------------------------------------------
+      # ENVIRONMENT
+      # --------------------------------------------------
       - name: Verify build environment
         run: |
           echo "Node:"
@@ -277,34 +246,34 @@ jobs:
           java -version
 
           echo ""
+          echo "Expo:"
+          npx expo --version
+
+          echo ""
           echo "Gradle:"
           cd android
           ./gradlew --version
 
 
-      # ---------------------------------------------------------
-      # 17. BUILD RELEASE APK
-      #
-      # assembleRelease automatically bundles JS for a release build.
-      # No Metro server is required on the user's phone.
-      # ---------------------------------------------------------
+      # --------------------------------------------------
+      # BUILD RELEASE APK
+      # --------------------------------------------------
       - name: Build LO Travel Release APK
         run: |
           cd android
 
-          ./gradlew \
-            assembleRelease \
+          ./gradlew assembleRelease \
             --stacktrace \
             --no-daemon \
             --no-parallel
 
 
-      # ---------------------------------------------------------
-      # 18. VERIFY APK
-      # ---------------------------------------------------------
-      - name: Verify APK
+      # --------------------------------------------------
+      # VERIFY APK
+      # --------------------------------------------------
+      - name: Verify release APK
         run: |
-          echo "Release APK files:"
+          echo "Searching for APK..."
 
           find android/app/build/outputs/apk/release \
             -type f \
@@ -316,17 +285,17 @@ jobs:
             -name "*.apk" | wc -l)
 
           if [ "$APK_COUNT" -eq 0 ]; then
-            echo "ERROR: No release APK was generated."
+            echo "ERROR: Release APK was not generated."
             exit 1
           fi
 
           echo ""
-          echo "APK successfully generated."
+          echo "Release APK generated successfully."
 
 
-      # ---------------------------------------------------------
-      # 19. UPLOAD RELEASE APK
-      # ---------------------------------------------------------
+      # --------------------------------------------------
+      # UPLOAD APK
+      # --------------------------------------------------
       - name: Upload LO Travel Release APK
         uses: actions/upload-artifact@v4
         with:
@@ -336,23 +305,19 @@ jobs:
           retention-days: 30
 
 
-      # ---------------------------------------------------------
-      # 20. FAILURE DIAGNOSTICS
-      # ---------------------------------------------------------
-      - name: Collect build diagnostics
+      # --------------------------------------------------
+      # DIAGNOSTICS IF BUILD FAILS
+      # --------------------------------------------------
+      - name: Collect diagnostics
         if: failure()
         run: |
-          echo "================================================"
-          echo "BUILD DIAGNOSTICS"
-          echo "================================================"
+          echo "========================================"
+          echo "LO TRAVEL BUILD DIAGNOSTICS"
+          echo "========================================"
 
           echo ""
           echo "Node:"
           node --version || true
-
-          echo ""
-          echo "npm:"
-          npm --version || true
 
           echo ""
           echo "Expo:"
@@ -371,18 +336,12 @@ jobs:
           npm ls react-native-worklets --depth=0 || true
 
           echo ""
-          echo "gradle.properties:"
+          echo "Babel:"
+          npm ls babel-preset-expo --depth=0 || true
+
+          echo ""
+          echo "Gradle properties:"
           cat android/gradle.properties || true
 
           echo ""
-          echo "Reanimated package:"
-          cat node_modules/react-native-reanimated/package.json || true
-
-          echo ""
-          echo "Worklets package:"
-          cat node_modules/react-native-worklets/package.json || true
-
-          echo ""
-          echo "================================================"
-          echo "END DIAGNOSTICS"
-          echo "================================================"
+          echo "========================================"
