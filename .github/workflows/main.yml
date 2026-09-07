@@ -1,0 +1,58 @@
+name: Regenerate LO Travel package-lock.json
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  npm-install:
+    name: Clean install LO Travel dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        working-directory: artifacts/lo-travel
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Show environment
+        run: |
+          node --version
+          npm --version
+
+      - name: Clean npm install
+        run: |
+          rm -rf node_modules
+          rm -f package-lock.json
+          npm install --legacy-peer-deps
+
+      - name: Verify installed dependencies
+        run: |
+          npm ls expo --depth=0
+          npm ls react-native --depth=0
+          npm ls react-native-reanimated --depth=0
+          npm ls react-native-worklets --depth=0
+
+      - name: Verify package-lock.json
+        run: |
+          test -f package-lock.json
+          echo "package-lock.json generated successfully."
+          ls -lh package-lock.json
+
+      - name: Upload generated package-lock.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: lo-travel-package-lock
+          path: artifacts/lo-travel/package-lock.json
+          if-no-files-found: error
+          retention-days: 14
